@@ -8,13 +8,16 @@ use ratatui::text::Text;
 // transcript views (e.g., `nl` separates line numbers from content with a tab).
 // Replacing tabs with spaces avoids odd visual artifacts without changing
 // semantics for our use cases.
+pub const TAB_WIDTH: usize = 4;
+
 fn expand_tabs(s: &str) -> std::borrow::Cow<'_, str> {
     if s.contains('\t') {
-        // Keep it simple: replace each tab with 4 spaces.
+        // Keep it simple: replace each tab with fixed-width spaces.
         // We do not try to align to tab stops since most usages (like `nl`)
         // look acceptable with a fixed substitution and this avoids stateful math
         // across spans.
-        std::borrow::Cow::Owned(s.replace('\t', "    "))
+        let spaces = " ".repeat(TAB_WIDTH);
+        std::borrow::Cow::Owned(s.replace('\t', &spaces))
     } else {
         std::borrow::Cow::Borrowed(s)
     }
@@ -54,5 +57,24 @@ pub fn ansi_escape(s: &str) -> Text<'static> {
                 panic!();
             }
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::TAB_WIDTH;
+    use super::expand_tabs;
+
+    #[test]
+    fn expand_tabs_replaces_with_four_spaces() {
+        let expanded = expand_tabs("a\tb\tc");
+        let spaces = " ".repeat(TAB_WIDTH);
+        assert_eq!(expanded.as_ref(), format!("a{spaces}b{spaces}c"));
+    }
+
+    #[test]
+    fn expand_tabs_no_tabs_returns_original() {
+        let expanded = expand_tabs("no tabs here");
+        assert_eq!(expanded.as_ref(), "no tabs here");
     }
 }
