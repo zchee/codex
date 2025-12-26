@@ -24,6 +24,7 @@
 use std::io;
 use std::io::Write;
 
+use codex_ansi_escape::TAB_WIDTH;
 use crossterm::cursor::MoveTo;
 use crossterm::queue;
 use crossterm::style::Colors;
@@ -201,7 +202,15 @@ where
     /// Obtains a difference between the previous and the current buffer and passes it to the
     /// current backend for drawing.
     pub fn flush(&mut self) -> io::Result<()> {
-        let updates = diff_buffers(self.previous_buffer(), self.current_buffer());
+        let updates = if buffer_contains_tabs(self.previous_buffer())
+            || buffer_contains_tabs(self.current_buffer())
+        {
+            let previous_expanded = expand_tabs_buffer(self.previous_buffer());
+            let current_expanded = expand_tabs_buffer(self.current_buffer());
+            diff_buffers(&previous_expanded, &current_expanded)
+        } else {
+            diff_buffers(self.previous_buffer(), self.current_buffer())
+        };
         let last_put_command = updates.iter().rfind(|command| command.is_put());
         if let Some(&DrawCommand::Put { x, y, .. }) = last_put_command {
             self.last_known_cursor_pos = Position { x, y };
@@ -402,6 +411,84 @@ enum DrawCommand {
     ClearToEnd { x: u16, y: u16, bg: Color },
 }
 
+fn buffer_contains_tabs(buffer: &Buffer) -> bool {
+    buffer
+        .content
+        .iter()
+        .any(|cell| cell.symbol().contains('\t'))
+}
+
+fn expand_tabs_buffer(buffer: &Buffer) -> Buffer {
+    let area = buffer.area;
+    let width = area.width as usize;
+    let height = area.height as usize;
+    let mut out = Buffer::empty(area);
+
+    for y in 0..height {
+        let row_start = y * width;
+        let row_end = row_start + width;
+        let row = &buffer.content[row_start..row_end];
+
+        // Seed the row with the original cell styles so background/attributes are preserved.
+        for (x, cell) in row.iter().enumerate() {
+            let mut seeded = cell.clone();
+            seeded.set_symbol(" ");
+            seeded.skip = false;
+            out.content[row_start + x] = seeded;
+        }
+
+        let mut x_out = 0usize;
+        let mut x_in = 0usize;
+        while x_in < width && x_out < width {
+            let cell = &row[x_in];
+            if cell.skip {
+                x_in += 1;
+                continue;
+            }
+
+            let symbol = cell.symbol();
+            if symbol == "\t" {
+                let mut spaces = TAB_WIDTH.saturating_sub(x_out % TAB_WIDTH);
+                if spaces == 0 {
+                    spaces = TAB_WIDTH;
+                }
+                for _ in 0..spaces {
+                    if x_out >= width {
+                        break;
+                    }
+                    let mut space_cell = cell.clone();
+                    space_cell.set_symbol(" ");
+                    space_cell.skip = false;
+                    out.content[row_start + x_out] = space_cell;
+                    x_out += 1;
+                }
+                x_in += 1;
+                continue;
+            }
+
+            let symbol_width = symbol.width().max(1);
+            out.content[row_start + x_out] = cell.clone();
+            x_out += 1;
+
+            if symbol_width > 1 {
+                for _ in 1..symbol_width {
+                    if x_out >= width {
+                        break;
+                    }
+                    let mut skip_cell = cell.clone();
+                    skip_cell.set_symbol(" ");
+                    skip_cell.skip = true;
+                    out.content[row_start + x_out] = skip_cell;
+                    x_out += 1;
+                }
+            }
+            x_in += 1;
+        }
+    }
+
+    out
+}
+
 fn diff_buffers(a: &Buffer, b: &Buffer) -> Vec<DrawCommand> {
     let previous_buffer = &a.content;
     let next_buffer = &b.content;
@@ -596,6 +683,49 @@ mod tests {
     use pretty_assertions::assert_eq;
     use ratatui::layout::Rect;
     use ratatui::style::Style;
+
+    fn row_to_string(buf: &Buffer, row: u16) -> String {
+        let width = buf.area.width as usize;
+        let start = row as usize * width;
+        let mut out = String::new();
+        for cell in &buf.content[start..start + width] {
+            out.push_str(cell.symbol());
+        }
+        out
+    }
+
+    #[test]
+    fn buffer_contains_tabs_detects_tabs() {
+        let area = Rect::new(0, 0, 3, 1);
+        let mut buf = Buffer::empty(area);
+        assert!(!buffer_contains_tabs(&buf));
+        buf.cell_mut((1, 0))
+            .expect("cell should exist")
+            .set_symbol("\t");
+        assert!(buffer_contains_tabs(&buf));
+    }
+
+    #[test]
+    fn expand_tabs_buffer_shifts_to_tab_stop() {
+        let area = Rect::new(0, 0, 8, 1);
+        let mut buf = Buffer::empty(area);
+        buf.cell_mut((0, 0))
+            .expect("cell should exist")
+            .set_symbol("a");
+        buf.cell_mut((1, 0))
+            .expect("cell should exist")
+            .set_symbol("\t");
+        buf.cell_mut((2, 0))
+            .expect("cell should exist")
+            .set_symbol("b");
+
+        let expanded = expand_tabs_buffer(&buf);
+        let row = row_to_string(&expanded, 0);
+        let tab_spaces = TAB_WIDTH - (1 % TAB_WIDTH);
+        let trailing = area.width as usize - (1 + tab_spaces + 1);
+        let expected = format!("a{}b{}", " ".repeat(tab_spaces), " ".repeat(trailing));
+        assert_eq!(row, expected);
+    }
 
     #[test]
     fn diff_buffers_does_not_emit_clear_to_end_for_full_width_row() {
