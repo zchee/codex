@@ -154,6 +154,18 @@ const RESERVED_MODEL_PROVIDER_IDS: [&str; 3] = [
     LMSTUDIO_OSS_PROVIDER_ID,
 ];
 
+const fn schema_default_true() -> bool {
+    true
+}
+
+const fn schema_default_false() -> bool {
+    false
+}
+
+const fn schema_default_background_terminal_max_timeout() -> u64 {
+    DEFAULT_MAX_BACKGROUND_TERMINAL_TIMEOUT_MS
+}
+
 #[cfg(target_os = "linux")]
 pub fn system_bwrap_warning() -> Option<String> {
     system_bwrap_warning_for_path(Path::new(SYSTEM_BWRAP_PATH))
@@ -1142,6 +1154,7 @@ pub struct ConfigToml {
     /// ARC.
     pub approvals_reviewer: Option<ApprovalsReviewer>,
 
+    /// Policy used to build process environments for shell/unified exec.
     #[serde(default)]
     pub shell_environment_policy: ShellEnvironmentPolicyToml,
 
@@ -1153,6 +1166,7 @@ pub struct ConfigToml {
     /// If `false`, the model can never use a login shell: `login = true`
     /// requests are rejected, and omitting `login` defaults to a non-login
     /// shell.
+    #[schemars(default = "schema_default_true")]
     pub allow_login_shell: Option<bool>,
 
     /// Sandbox mode to use.
@@ -1207,6 +1221,7 @@ pub struct ConfigToml {
     /// keyring: Use an OS-specific keyring service.
     /// auto: Use the keyring if available, otherwise use a file.
     #[serde(default)]
+    #[schemars(default = "AuthCredentialsStoreMode::default")]
     pub cli_auth_credentials_store: Option<AuthCredentialsStoreMode>,
 
     /// Definition for MCP servers that Codex can reach out to for tool calls.
@@ -1221,6 +1236,7 @@ pub struct ConfigToml {
     /// file: Use a file in the Codex home directory.
     /// auto (default): Use the OS-specific keyring service if available, otherwise use a file.
     #[serde(default)]
+    #[schemars(default = "OAuthCredentialsStoreMode::default")]
     pub mcp_oauth_credentials_store: Option<OAuthCredentialsStoreMode>,
 
     /// Optional fixed port for the local HTTP callback server used during MCP OAuth login.
@@ -1249,6 +1265,7 @@ pub struct ConfigToml {
 
     /// Maximum poll window for background terminal output (`write_stdin`), in milliseconds.
     /// Default: `300000` (5 minutes).
+    #[schemars(default = "schema_default_background_terminal_max_timeout")]
     pub background_terminal_max_timeout: Option<u64>,
 
     /// Optional absolute path to the Node runtime used by `js_repl`.
@@ -1288,15 +1305,23 @@ pub struct ConfigToml {
 
     /// When set to `true`, `AgentReasoning` events will be hidden from the
     /// UI/output. Defaults to `false`.
+    #[schemars(default = "schema_default_false")]
     pub hide_agent_reasoning: Option<bool>,
 
     /// When set to `true`, `AgentReasoningRawContentEvent` events will be shown in the UI/output.
     /// Defaults to `false`.
+    #[schemars(default = "schema_default_false")]
     pub show_raw_agent_reasoning: Option<bool>,
 
+    /// Reasoning effort to request from the primary model when supported.
     pub model_reasoning_effort: Option<ReasoningEffort>,
+
+    /// Reasoning effort override to use when starting Plan mode sessions.
     pub plan_mode_reasoning_effort: Option<ReasoningEffort>,
+
+    /// Reasoning summary detail level to request when supported by the model.
     pub model_reasoning_summary: Option<ReasoningSummary>,
+
     /// Optional verbosity control for GPT-5 models (Responses API `text.verbosity`).
     pub model_verbosity: Option<Verbosity>,
 
@@ -1351,6 +1376,8 @@ pub struct ConfigToml {
     /// instructions inserted into developer messages when realtime becomes
     /// active.
     pub experimental_realtime_start_instructions: Option<String>,
+
+    /// Per-project trust settings keyed by project root path.
     pub projects: Option<HashMap<String, ProjectConfig>>,
 
     /// Controls the web search tool mode: disabled, cached, or live.
@@ -1391,11 +1418,13 @@ pub struct ConfigToml {
     /// Markers used to detect the project root when searching parent
     /// directories for `.codex` folders. Defaults to [".git"] when unset.
     #[serde(default)]
+    #[schemars(default = "crate::config_loader::default_project_root_markers")]
     pub project_root_markers: Option<Vec<String>>,
 
     /// When `true`, checks for Codex updates on startup and surfaces update prompts.
     /// Set to `false` only if your Codex updates are centrally managed.
     /// Defaults to `true`.
+    #[schemars(default = "schema_default_true")]
     pub check_for_update_on_startup: Option<bool>,
 
     /// When true, disables burst-paste detection for typed input entirely.
@@ -1433,9 +1462,21 @@ pub struct ConfigToml {
     /// Deprecated: ignored. Use `model_instructions_file`.
     #[schemars(skip)]
     pub experimental_instructions_file: Option<AbsolutePathBuf>,
+
+    /// Legacy path to a file containing compaction prompt instructions.
+    /// Deprecated: prefer `compact_prompt`.
     pub experimental_compact_prompt_file: Option<AbsolutePathBuf>,
+
+    /// Legacy alias for `[features].unified_exec`.
+    /// Deprecated: prefer `[features].unified_exec`.
+    /// Enabled by default on non-Windows platforms and disabled by default on Windows.
     pub experimental_use_unified_exec_tool: Option<bool>,
+
+    /// Legacy alias for `[features].apply_patch_freeform`.
+    /// Deprecated: prefer `[features].apply_patch_freeform`.
+    #[schemars(default = "schema_default_false")]
     pub experimental_use_freeform_apply_patch: Option<bool>,
+
     /// Preferred OSS provider for local models, e.g. "lmstudio" or "ollama".
     pub oss_provider: Option<String>,
 }
@@ -1465,9 +1506,11 @@ impl From<ConfigToml> for UserSavedConfig {
     }
 }
 
+/// Per-project settings keyed by project root path in `[projects]`.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema)]
 #[schemars(deny_unknown_fields)]
 pub struct ProjectConfig {
+    /// Trust decision applied when Codex is launched inside the matching project root.
     pub trust_level: Option<TrustLevel>,
 }
 

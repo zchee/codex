@@ -18,6 +18,7 @@ use toml::Table;
 
 mod legacy;
 use legacy::LegacyFeatureToggles;
+pub use legacy::legacy_feature_aliases;
 pub use legacy::legacy_feature_keys;
 
 /// High-level lifecycle stage for a feature.
@@ -195,6 +196,134 @@ impl Feature {
 
     pub fn default_enabled(self) -> bool {
         self.info().default_enabled
+    }
+
+    pub fn schema_description(self) -> &'static str {
+        match self {
+            Self::GhostCommit => "Create a ghost commit at each turn.",
+            Self::ShellTool => "Enable the default shell tool.",
+            Self::JsRepl => "Enable JavaScript REPL tools backed by a persistent Node kernel.",
+            Self::CodeMode => {
+                "Enable a minimal JavaScript mode backed by Node's built-in vm runtime."
+            }
+            Self::CodeModeOnly => {
+                "Restrict model-visible tools to code mode entrypoints (`exec`, `wait`)."
+            }
+            Self::JsReplToolsOnly => "Only expose js_repl tools directly to the model.",
+            Self::UnifiedExec => "Use the single unified PTY-backed exec tool.",
+            Self::ShellZshFork => "Route shell tool execution through the zsh exec bridge.",
+            Self::ApplyPatchFreeform => "Include the freeform apply_patch tool.",
+            Self::ExecPermissionApprovals => {
+                "Allow exec tools to request additional permissions while staying sandboxed."
+            }
+            Self::CodexHooks => "Enable Claude-style lifecycle hooks loaded from hooks.json files.",
+            Self::RequestPermissionsTool => "Expose the built-in request_permissions tool.",
+            Self::WebSearchRequest => {
+                "Allow the model to request web searches that fetch live content."
+            }
+            Self::WebSearchCached => {
+                "Allow the model to request web searches that fetch cached content. Takes precedence over `WebSearchRequest`."
+            }
+            Self::SearchTool => "Legacy search-tool feature flag kept for backward compatibility.",
+            Self::UseLinuxSandboxBwrap => {
+                "Removed legacy Linux bubblewrap opt-in flag retained as a no-op so old wrappers and config can still parse it."
+            }
+            Self::UseLegacyLandlock => {
+                "Use the legacy Landlock Linux sandbox fallback instead of the default bubblewrap pipeline."
+            }
+            Self::RequestRule => "Allow the model to request approval and propose exec rules.",
+            Self::WindowsSandbox => "Enable Windows sandbox (restricted token) on Windows.",
+            Self::WindowsSandboxElevated => {
+                "Use the elevated Windows sandbox pipeline (setup + runner)."
+            }
+            Self::RemoteModels => "Legacy remote models flag kept for backward compatibility.",
+            Self::ShellSnapshot => "Experimental shell snapshotting.",
+            Self::CodexGitCommit => {
+                "Enable git commit attribution guidance via model instructions."
+            }
+            Self::RuntimeMetrics => "Enable runtime metrics snapshots via a manual reader.",
+            Self::Sqlite => "Persist rollout metadata to a local SQLite database.",
+            Self::MemoryTool => {
+                "Enable startup memory extraction and file-backed memory consolidation."
+            }
+            Self::ChildAgentsMd => "Append additional AGENTS.md guidance to user instructions.",
+            Self::ImageDetailOriginal => {
+                "Allow the model to request `detail: \"original\"` image outputs on supported models."
+            }
+            Self::EnableRequestCompression => {
+                "Compress request bodies (zstd) when sending streaming requests to codex-backend."
+            }
+            Self::Collab => "Enable collab tools.",
+            Self::MultiAgentV2 => "Enable task-path-based multi-agent routing.",
+            Self::SpawnCsv => "Enable CSV-backed agent job tools.",
+            Self::Apps => "Enable apps.",
+            Self::ToolSuggest => "Enable discoverable tool suggestions for apps.",
+            Self::Plugins => "Enable plugins.",
+            Self::ImageGeneration => {
+                "Allow the model to invoke the built-in image generation tool."
+            }
+            Self::SkillMcpDependencyInstall => {
+                "Allow prompting and installing missing MCP dependencies."
+            }
+            Self::SkillEnvVarDependencyPrompt => "Prompt for missing skill env var dependencies.",
+            Self::Steer => {
+                "Steer feature flag - when enabled, Enter submits immediately instead of queuing. Kept for config backward compatibility; behavior is always steer-enabled."
+            }
+            Self::DefaultModeRequestUserInput => {
+                "Allow request_user_input in Default collaboration mode."
+            }
+            Self::GuardianApproval => "Enable automatic review for approval prompts.",
+            Self::CollaborationModes => {
+                "Enable collaboration modes (Plan, Default). Kept for config backward compatibility; behavior is always collaboration-modes-enabled."
+            }
+            Self::ToolCallMcpElicitation => {
+                "Route MCP tool approval prompts through the MCP elicitation request path."
+            }
+            Self::Personality => "Enable personality selection in the TUI.",
+            Self::Artifact => "Enable native artifact tools.",
+            Self::FastMode => "Enable Fast mode selection in the TUI and request layer.",
+            Self::VoiceTranscription => "Enable voice transcription in the TUI composer.",
+            Self::RealtimeConversation => {
+                "Enable experimental realtime voice conversation mode in the TUI."
+            }
+            Self::TuiAppServer => {
+                "Route interactive startup to the app-server-backed TUI implementation."
+            }
+            Self::PreventIdleSleep => "Prevent idle system sleep while a turn is actively running.",
+            Self::ResponsesWebsockets => {
+                "Legacy rollout flag for Responses API WebSocket transport experiments."
+            }
+            Self::ResponsesWebsocketsV2 => {
+                "Legacy rollout flag for Responses API WebSocket transport v2 experiments."
+            }
+        }
+    }
+
+    pub fn schema_default(self) -> Option<bool> {
+        match self {
+            Self::UnifiedExec => None,
+            _ => Some(self.default_enabled()),
+        }
+    }
+
+    pub fn schema_default_description(self) -> &'static str {
+        match self {
+            Self::UnifiedExec => {
+                "Enabled by default on non-Windows platforms and disabled by default on Windows."
+            }
+            _ if self.default_enabled() => "Enabled by default.",
+            _ => "Disabled by default.",
+        }
+    }
+
+    pub fn schema_stage_description(self) -> &'static str {
+        match self.stage() {
+            Stage::UnderDevelopment => "Status: under development.",
+            Stage::Experimental { .. } => "Status: experimental.",
+            Stage::Stable => "Status: stable.",
+            Stage::Deprecated => "Status: deprecated.",
+            Stage::Removed => "Status: removed and retained for backward compatibility.",
+        }
     }
 
     fn info(self) -> &'static FeatureSpec {

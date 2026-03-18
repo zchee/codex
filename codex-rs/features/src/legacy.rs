@@ -51,6 +51,12 @@ pub fn legacy_feature_keys() -> impl Iterator<Item = &'static str> {
     ALIASES.iter().map(|alias| alias.legacy_key)
 }
 
+pub fn legacy_feature_aliases() -> impl Iterator<Item = (&'static str, Feature)> {
+    ALIASES
+        .iter()
+        .map(|alias| (alias.legacy_key, alias.feature))
+}
+
 pub(crate) fn feature_for_key(key: &str) -> Option<Feature> {
     ALIASES
         .iter()
