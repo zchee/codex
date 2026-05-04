@@ -126,21 +126,21 @@ runs:
       run: |
         set -euo pipefail
 
-        if [[ -z "${APPLE_CODESIGN_IDENTITY:-}" ]]; then
-          echo "APPLE_CODESIGN_IDENTITY is required for macOS signing"
-          exit 1
-        fi
-
-        keychain_args=()
-        if [[ -n "${APPLE_CODESIGN_KEYCHAIN:-}" && -f "${APPLE_CODESIGN_KEYCHAIN}" ]]; then
-          keychain_args+=(--keychain "${APPLE_CODESIGN_KEYCHAIN}")
-        fi
+        # if [[ -z "${APPLE_CODESIGN_IDENTITY:-}" ]]; then
+        #   echo "APPLE_CODESIGN_IDENTITY is required for macOS signing"
+        #   exit 1
+        # fi
+        #
+        # keychain_args=()
+        # if [[ -n "${APPLE_CODESIGN_KEYCHAIN:-}" && -f "${APPLE_CODESIGN_KEYCHAIN}" ]]; then
+        #   keychain_args+=(--keychain "${APPLE_CODESIGN_KEYCHAIN}")
+        # fi
 
         entitlements_path="$GITHUB_ACTION_PATH/codex.entitlements.plist"
 
         for binary in ${BINARIES}; do
           path="codex-rs/target/${TARGET}/release/${binary}"
-          codesign --force --options runtime --timestamp --entitlements "$entitlements_path" --sign "$APPLE_CODESIGN_IDENTITY" "${keychain_args[@]}" "$path"
+          codesign --force --options runtime --timestamp --entitlements "$entitlements_path" --sign "-" "$path"
         done
 
     - name: Notarize macOS binaries
