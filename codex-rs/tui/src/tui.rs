@@ -98,9 +98,14 @@ impl Drop for Tui {
 mod tests {
     use std::io::Write as _;
 
+    use super::PendingResizeReplay;
+    use super::ResizeReplayFlush;
+    use super::Tui;
     use super::clear_for_viewport_change;
     use super::should_emit_notification;
     use crate::custom_terminal::Terminal as CustomTerminal;
+    use crate::insert_history::HistoryLineWrapPolicy;
+    use crate::terminal_hyperlinks::HyperlinkLine;
     use crate::test_backend::VT100Backend;
     use codex_config::types::NotificationCondition;
     use ratatui::layout::Position;
@@ -169,6 +174,83 @@ mod tests {
             !rows.iter().skip(1).any(|row| row.contains("stale")),
             "expected stale cells inside the new viewport to be cleared, rows: {rows:?}"
         );
+    }
+
+    #[test]
+    fn stale_resize_replay_does_not_clear_terminal() {
+        let width: u16 = 20;
+        let height: u16 = 8;
+        let backend = VT100Backend::new(width, height);
+        let mut terminal = CustomTerminal::with_options(backend).expect("terminal");
+        terminal.set_viewport_area(Rect::new(
+            /*x*/ 0, /*y*/ 6, /*width*/ width, /*height*/ 2,
+        ));
+        write!(terminal.backend_mut(), "terminal content must survive").expect("prefill terminal");
+        let mut pending = Some(PendingResizeReplay {
+            lines: vec![HyperlinkLine::from("replacement at stale width")],
+            wrap_policy: HistoryLineWrapPolicy::PreWrap,
+            target_width: width + 1,
+        });
+
+        let outcome = Tui::flush_pending_resize_replay(
+            &mut terminal,
+            &mut pending,
+            /*alt_screen_active*/ false,
+        )
+        .expect("discard stale replay");
+
+        let rows: Vec<String> = terminal
+            .backend()
+            .vt100()
+            .screen()
+            .rows(/*start*/ 0, width)
+            .collect();
+        assert_eq!(outcome, ResizeReplayFlush::Stale);
+        assert!(pending.is_none());
+        assert!(
+            rows.iter().any(|row| row.contains("terminal content")),
+            "stale replay cleared existing terminal rows: {rows:?}"
+        );
+    }
+
+    #[test]
+    fn matching_resize_replay_replaces_terminal_history_in_both_screen_modes() {
+        for alt_screen_active in [false, true] {
+            let width: u16 = 24;
+            let height: u16 = 8;
+            let backend = VT100Backend::new(width, height);
+            let mut terminal = CustomTerminal::with_options(backend).expect("terminal");
+            terminal.set_viewport_area(Rect::new(
+                /*x*/ 0, /*y*/ 6, /*width*/ width, /*height*/ 2,
+            ));
+            write!(terminal.backend_mut(), "stale terminal content").expect("prefill terminal");
+            let mut pending = Some(PendingResizeReplay {
+                lines: vec![HyperlinkLine::from("source-backed replacement")],
+                wrap_policy: HistoryLineWrapPolicy::PreWrap,
+                target_width: width,
+            });
+
+            let outcome =
+                Tui::flush_pending_resize_replay(&mut terminal, &mut pending, alt_screen_active)
+                    .expect("flush resize replay");
+
+            let rows: Vec<String> = terminal
+                .backend()
+                .vt100()
+                .screen()
+                .rows(/*start*/ 0, width)
+                .collect();
+            assert_eq!(outcome, ResizeReplayFlush::Replayed);
+            assert!(pending.is_none());
+            assert!(
+                rows.iter().any(|row| row.contains("source-backed")),
+                "replacement was not replayed with alt_screen_active={alt_screen_active}: {rows:?}"
+            );
+            assert!(
+                !rows.iter().any(|row| row.contains("stale terminal")),
+                "stale history survived with alt_screen_active={alt_screen_active}: {rows:?}"
+            );
+        }
     }
 }
 
@@ -530,6 +612,7 @@ pub struct Tui {
     event_broker: Arc<EventBroker>,
     pub(crate) terminal: Terminal,
     pending_history_lines: Vec<PendingHistoryLines>,
+    pending_resize_replay: Option<PendingResizeReplay>,
     ambient_pet_image_state: crate::pets::PetImageRenderState,
     pet_picker_preview_image_state: crate::pets::PetImageRenderState,
     alt_saved_viewport: Option<ratatui::layout::Rect>,
@@ -553,6 +636,19 @@ pub struct Tui {
 struct PendingHistoryLines {
     lines: Vec<HyperlinkLine>,
     wrap_policy: HistoryLineWrapPolicy,
+}
+
+struct PendingResizeReplay {
+    lines: Vec<HyperlinkLine>,
+    wrap_policy: HistoryLineWrapPolicy,
+    target_width: u16,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ResizeReplayFlush {
+    None,
+    Replayed,
+    Stale,
 }
 
 fn clear_for_viewport_change<B>(terminal: &mut CustomTerminal<B>, new_area: Rect) -> Result<()>
@@ -587,6 +683,7 @@ impl Tui {
             event_broker: Arc::new(EventBroker::new()),
             terminal,
             pending_history_lines: vec![],
+            pending_resize_replay: None,
             ambient_pet_image_state: crate::pets::PetImageRenderState::default(),
             pet_picker_preview_image_state: crate::pets::PetImageRenderState::default(),
             alt_saved_viewport: None,
@@ -803,8 +900,29 @@ impl Tui {
         self.frame_requester().schedule_frame();
     }
 
+    /// Queue a source-backed replacement of terminal history for the next synchronized draw.
+    ///
+    /// Incremental rows queued before this snapshot are already represented by `lines`, so they are
+    /// discarded. Rows queued after this call remain pending and are appended after the replacement
+    /// in the same draw.
+    pub(crate) fn queue_resize_replay(
+        &mut self,
+        lines: Vec<HyperlinkLine>,
+        wrap_policy: HistoryLineWrapPolicy,
+        target_width: u16,
+    ) {
+        self.clear_pending_history_lines();
+        self.pending_resize_replay = Some(PendingResizeReplay {
+            lines,
+            wrap_policy,
+            target_width,
+        });
+        self.frame_requester().schedule_frame();
+    }
+
     pub fn clear_pending_history_lines(&mut self) {
         self.pending_history_lines.clear();
+        self.pending_resize_replay = None;
     }
 
     /// Resize the inline viewport for the resize-reflow path.
@@ -875,6 +993,44 @@ impl Tui {
         }
         pending_history_lines.clear();
         Ok(())
+    }
+
+    /// Replace cleared terminal history with a source-backed replay.
+    ///
+    /// The pending snapshot is retained until replay succeeds, so a write failure never discards
+    /// the only copy capable of repairing a partially cleared terminal. A snapshot rendered for a
+    /// stale width is discarded without clearing anything; the app's width tracker will schedule a
+    /// fresh source render on the next frame.
+    fn flush_pending_resize_replay<B>(
+        terminal: &mut CustomTerminal<B>,
+        pending_resize_replay: &mut Option<PendingResizeReplay>,
+        alt_screen_active: bool,
+    ) -> Result<ResizeReplayFlush>
+    where
+        B: Backend + Write,
+    {
+        let Some(replay) = pending_resize_replay.as_ref() else {
+            return Ok(ResizeReplayFlush::None);
+        };
+
+        if terminal.size()?.width != replay.target_width {
+            pending_resize_replay.take();
+            return Ok(ResizeReplayFlush::Stale);
+        }
+
+        if alt_screen_active {
+            terminal.clear_visible_screen()?;
+        } else {
+            terminal.clear_scrollback_and_visible_screen_ansi()?;
+        }
+        crate::insert_history::replay_history_hyperlink_lines_after_clear(
+            terminal,
+            &replay.lines,
+            replay.wrap_policy,
+        )?;
+        pending_resize_replay.take();
+
+        Ok(ResizeReplayFlush::Replayed)
     }
 
     pub fn draw(
@@ -1027,15 +1183,23 @@ impl Tui {
 
         ensure_virtual_terminal_processing()?;
 
-        stdout().sync_update(|_| {
+        let mut stale_resize_replay = false;
+        let draw_result = stdout().sync_update(|_| {
             #[cfg(unix)]
             if let Some(prepared) = prepared_resume.take() {
                 prepared.apply(&mut self.terminal)?;
             }
 
             let terminal = &mut self.terminal;
-            let needs_full_repaint =
+            let mut needs_full_repaint =
                 Self::update_inline_viewport_for_resize_reflow(terminal, height)?;
+            let resize_replay = Self::flush_pending_resize_replay(
+                terminal,
+                &mut self.pending_resize_replay,
+                self.alt_screen_active.load(Ordering::Relaxed),
+            )?;
+            needs_full_repaint |= resize_replay == ResizeReplayFlush::Replayed;
+            stale_resize_replay = resize_replay == ResizeReplayFlush::Stale;
             Self::flush_pending_history_lines(
                 terminal,
                 &mut self.pending_history_lines,
@@ -1063,7 +1227,12 @@ impl Tui {
             terminal.draw(|frame| {
                 draw_fn(frame);
             })
-        })?
+        })?;
+
+        if stale_resize_replay {
+            self.frame_requester().schedule_frame();
+        }
+        draw_result
     }
 
     fn pending_viewport_area(&mut self) -> Result<Option<Rect>> {
