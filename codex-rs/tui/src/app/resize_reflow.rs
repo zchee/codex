@@ -232,20 +232,6 @@ impl App {
         crate::resize_reflow_cap::resize_reflow_max_rows(self.config.terminal_resize_reflow)
     }
 
-    fn clear_terminal_for_resize_replay(&mut self, tui: &mut tui::Tui) -> Result<()> {
-        if tui.is_alt_screen_active() {
-            tui.terminal.clear_visible_screen()?;
-        } else {
-            tui.terminal.clear_scrollback_and_visible_screen_ansi()?;
-        }
-        let mut area = tui.terminal.viewport_area;
-        if area.y > 0 {
-            area.y = 0;
-            tui.terminal.set_viewport_area(area);
-        }
-        Ok(())
-    }
-
     /// Finish stream consolidation by repairing any resize work that happened during streaming.
     ///
     /// This is called after agent-message stream cells have either been replaced by an
@@ -408,17 +394,12 @@ impl App {
         let reflow_result = self.render_transcript_lines_for_reflow(width);
         let reflowed_lines = reflow_result.lines;
 
-        // Drop any queued pre-resize/pre-consolidation inserts before rebuilding from cells.
-        tui.clear_pending_history_lines();
-        self.clear_terminal_for_resize_replay(tui)?;
-
         self.deferred_history_lines.clear();
-        if !reflowed_lines.is_empty() {
-            tui.insert_history_hyperlink_lines_with_wrap_policy(
-                reflowed_lines,
-                self.history_line_wrap_policy(),
-            );
-        }
+        tui.queue_resize_replay(
+            reflowed_lines,
+            self.history_line_wrap_policy(),
+            terminal_width,
+        );
 
         Ok(terminal_width)
     }
@@ -438,16 +419,12 @@ impl App {
             self.render_transcript_lines_for_reflow(width).lines
         };
 
-        tui.clear_pending_history_lines();
-        self.clear_terminal_for_resize_replay(tui)?;
-
         self.deferred_history_lines.clear();
-        if !reflowed_lines.is_empty() {
-            tui.insert_history_hyperlink_lines_with_wrap_policy(
-                reflowed_lines,
-                self.history_line_wrap_policy(),
-            );
-        }
+        tui.queue_resize_replay(
+            reflowed_lines,
+            self.history_line_wrap_policy(),
+            terminal_width,
+        );
 
         Ok(())
     }

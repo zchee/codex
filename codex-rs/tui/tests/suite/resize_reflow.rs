@@ -91,6 +91,10 @@ async fn tmux_split_preserves_fresh_session_composer_row_after_resize_reflow() -
     )?;
     let baseline_capture =
         wait_for_capture_contains(&codex_pane, draft, Duration::from_secs(/*secs*/ 15))?;
+    anyhow::ensure!(
+        baseline_capture.contains("atomic replay final sentinel"),
+        "stream finalization dropped the table tail before any resize:\n{baseline_capture}"
+    );
     let baseline_row = last_composer_row(&baseline_capture).context("composer row before split")?;
     let baseline_history_row = first_row_containing(&baseline_capture, "resize reflow sentinel")
         .context("history row before split")?;
@@ -485,9 +489,11 @@ fn write_auth(codex_home: &Path) -> Result<()> {
 }
 
 fn resize_reflow_sse() -> String {
-    let text = "resize reflow sentinel says hi. This paragraph is intentionally long enough to exercise terminal wrapping, scrollback redraw, and pane resize behavior without requiring a live model response. It includes enough ordinary prose to wrap across several rows in a narrow tmux pane, then keep going so repeated split and restore cycles have visible history above the composer. If a resize path accidentally inserts blank rows or anchors the viewport lower on each pass, the composer row will drift after the pane returns to its original height.";
+    let text = "resize reflow sentinel says hi. This paragraph is intentionally long enough to exercise terminal wrapping, scrollback redraw, and pane resize behavior without requiring a live model response. It includes enough ordinary prose to wrap across several rows in a narrow tmux pane, then keep going so repeated split and restore cycles have visible history above the composer. If a resize path accidentally inserts blank rows or anchors the viewport lower on each pass, the composer row will drift after the pane returns to its original height.\n\n| Row | Result |\n| --- | --- |\n| 01 | streamed table body |\n| 02 | atomic replay final sentinel |";
     responses::sse(vec![
         responses::ev_response_created("resp-resize-smoke"),
+        responses::ev_message_item_added("msg-resize-smoke", ""),
+        responses::ev_output_text_delta(text),
         responses::ev_assistant_message("msg-resize-smoke", text),
         responses::ev_completed("resp-resize-smoke"),
     ])
