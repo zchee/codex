@@ -249,6 +249,14 @@ impl App {
                 self.insert_pending_usage_output_after_stream_shutdown(tui);
             }
             AppEvent::ConsolidateProposedPlan(source) => {
+                if !self.terminal_resize_reflow_enabled() {
+                    if !self.transcript_reflow.history_cell_refresh_requested() {
+                        self.transcript_reflow.clear();
+                    }
+                    self.chat_widget.note_stream_consolidation_completed();
+                    self.insert_pending_usage_output_after_stream_shutdown(tui);
+                    return Ok(AppRunControl::Continue);
+                }
                 let end = self.transcript_cells.len();
                 let start = trailing_run_start::<history_cell::ProposedPlanStreamCell>(
                     &self.transcript_cells,

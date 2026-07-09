@@ -1686,8 +1686,9 @@ impl ChatWidget {
 
     /// Update resize-sensitive chat widget state after the terminal width changes.
     ///
-    /// Live stream wrapping stays consistent with the current viewport while finalized transcript
-    /// rebuilding runs through app-level resize reflow.
+    /// The app calls this even when terminal resize reflow is disabled so live stream wrapping
+    /// remains consistent with the current viewport. Finalized transcript rebuilding stays gated at
+    /// the app layer.
     pub(crate) fn on_terminal_resize(&mut self, width: u16) {
         let had_rendered_width = self.last_rendered_width.get().is_some();
         self.last_rendered_width.set(Some(width as usize));

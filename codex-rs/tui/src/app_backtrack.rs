@@ -294,7 +294,7 @@ impl App {
         }
         self.overlay = None;
         self.backtrack.overlay_preview_active = false;
-        tui.frame_requester().schedule_frame();
+        self.retry_pending_history_cell_refresh(tui);
         if was_backtrack {
             // Ensure backtrack state is fully reset when overlay closes (e.g. via 'q').
             self.reset_backtrack_state();
