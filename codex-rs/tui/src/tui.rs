@@ -252,6 +252,75 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn rollback_replace_clears_and_rewrites_in_both_screen_modes() {
+        for alt_screen_active in [false, true] {
+            let width: u16 = 24;
+            let height: u16 = 8;
+            let backend = VT100Backend::new(width, height);
+            let mut terminal = CustomTerminal::with_options(backend).expect("terminal");
+            terminal.set_viewport_area(Rect::new(
+                /*x*/ 0, /*y*/ 6, /*width*/ width, /*height*/ 2,
+            ));
+            write!(terminal.backend_mut(), "cancelled prompt ghost").expect("prefill terminal");
+
+            Tui::replace_history_lines_immediately(
+                &mut terminal,
+                &[HyperlinkLine::from("rolled-back transcript")],
+                HistoryLineWrapPolicy::PreWrap,
+                alt_screen_active,
+            )
+            .expect("replace history");
+
+            let rows: Vec<String> = terminal
+                .backend()
+                .vt100()
+                .screen()
+                .rows(/*start*/ 0, width)
+                .collect();
+            assert!(
+                rows.iter()
+                    .any(|row| row.contains("rolled-back transcript")),
+                "replacement missing with alt_screen_active={alt_screen_active}: {rows:?}"
+            );
+            assert!(
+                !rows.iter().any(|row| row.contains("ghost")),
+                "cancelled prompt survived with alt_screen_active={alt_screen_active}: {rows:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn rollback_replace_with_no_lines_clears_cancelled_prompt() {
+        let width: u16 = 20;
+        let height: u16 = 8;
+        let backend = VT100Backend::new(width, height);
+        let mut terminal = CustomTerminal::with_options(backend).expect("terminal");
+        terminal.set_viewport_area(Rect::new(
+            /*x*/ 0, /*y*/ 6, /*width*/ width, /*height*/ 2,
+        ));
+        write!(terminal.backend_mut(), "cancelled prompt ghost").expect("prefill terminal");
+
+        Tui::replace_history_lines_immediately(
+            &mut terminal,
+            &[],
+            HistoryLineWrapPolicy::PreWrap,
+            /*alt_screen_active*/ false,
+        )
+        .expect("replace history");
+
+        let rows: Vec<String> = terminal
+            .backend()
+            .vt100()
+            .screen()
+            .rows(/*start*/ 0, width)
+            .collect();
+        assert!(
+            !rows.iter().any(|row| row.contains("ghost")),
+            "cancelled prompt survived empty rollback rewrite: {rows:?}"
+        );
+    }
 }
 
 pub fn set_modes() -> Result<()> {
@@ -1018,6 +1087,56 @@ impl Tui {
             return Ok(ResizeReplayFlush::Stale);
         }
 
+        Self::replace_history_lines_immediately(
+            terminal,
+            &replay.lines,
+            replay.wrap_policy,
+            alt_screen_active,
+        )?;
+        pending_resize_replay.take();
+
+        Ok(ResizeReplayFlush::Replayed)
+    }
+
+    /// Immediately clear terminal history and write a source-backed replacement.
+    ///
+    /// Rollback rebuilds must not travel through `pending_resize_replay`: a stale-width
+    /// snapshot is discarded without clearing, and a reflow of an empty transcript never
+    /// re-queues one, so a rollback that emptied the transcript could leave the cancelled
+    /// prompt visible in scrollback. Writing the clear and the replacement in one
+    /// synchronized update keeps rollback correct under any resize interleaving; a later
+    /// reflow only ever re-renders the same source cells.
+    pub(crate) fn replace_history_lines_now(
+        &mut self,
+        lines: Vec<HyperlinkLine>,
+        wrap_policy: HistoryLineWrapPolicy,
+    ) -> Result<()> {
+        // Queued output renders the transcript this rewrite replaces; a queued reflow
+        // snapshot may even predate the rollback and would resurrect removed cells.
+        self.clear_pending_history_lines();
+        let alt_screen_active = self.is_alt_screen_active();
+        stdout().sync_update(|_| {
+            Self::replace_history_lines_immediately(
+                &mut self.terminal,
+                &lines,
+                wrap_policy,
+                alt_screen_active,
+            )
+        })??;
+        self.frame_requester().schedule_frame();
+        Ok(())
+    }
+
+    /// Clear terminal history and replay `lines` on the same writer.
+    fn replace_history_lines_immediately<B>(
+        terminal: &mut CustomTerminal<B>,
+        lines: &[HyperlinkLine],
+        wrap_policy: HistoryLineWrapPolicy,
+        alt_screen_active: bool,
+    ) -> Result<()>
+    where
+        B: Backend + Write,
+    {
         if alt_screen_active {
             terminal.clear_visible_screen()?;
         } else {
@@ -1025,12 +1144,9 @@ impl Tui {
         }
         crate::insert_history::replay_history_hyperlink_lines_after_clear(
             terminal,
-            &replay.lines,
-            replay.wrap_policy,
-        )?;
-        pending_resize_replay.take();
-
-        Ok(ResizeReplayFlush::Replayed)
+            lines,
+            wrap_policy,
+        )
     }
 
     pub fn draw(

@@ -420,11 +420,10 @@ impl App {
         };
 
         self.deferred_history_lines.clear();
-        tui.queue_resize_replay(
-            reflowed_lines,
-            self.history_line_wrap_policy(),
-            terminal_width,
-        );
+        // Rollback must clear even when no cells remain and must survive any resize
+        // interleaving, so it bypasses the droppable pending-replay snapshot and rewrites
+        // scrollback immediately.
+        tui.replace_history_lines_now(reflowed_lines, self.history_line_wrap_policy())?;
 
         Ok(())
     }

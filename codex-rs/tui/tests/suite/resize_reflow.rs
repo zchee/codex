@@ -438,6 +438,111 @@ async fn run_repeated_resize_smoke() -> Result<()> {
     Ok(())
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires tmux and a locally built codex binary; run with --ignored for manual resize smoke"]
+async fn tmux_split_after_final_message_keeps_it_in_scrollback() -> Result<()> {
+    if cfg!(windows) {
+        return Ok(());
+    }
+    skip_if_no_network!(Ok(()));
+    if Command::new("tmux").arg("-V").output().is_err() {
+        eprintln!("skipping resize smoke because tmux is unavailable");
+        return Ok(());
+    }
+
+    let repo_root = codex_utils_cargo_bin::repo_root()?;
+    let codex = codex_binary(&repo_root)?;
+    let codex_home = tempdir()?;
+    let server = MockServer::start().await;
+    let _response_mock = responses::mount_sse_once(&server, resize_reflow_sse()).await;
+    let openai_base_url_config = format!("openai_base_url=\"{}/v1\"", server.uri());
+    write_config(codex_home.path(), &repo_root)?;
+    write_auth(codex_home.path())?;
+
+    let session_name = format!("codex-resize-final-message-{}", std::process::id());
+    let _session = TmuxSession {
+        name: session_name.clone(),
+    };
+
+    let prompt = "Say hi.";
+    let start_output = checked_output(
+        Command::new("tmux")
+            .arg("new-session")
+            .arg("-d")
+            .arg("-P")
+            .arg("-F")
+            .arg("#{pane_id}")
+            .arg("-x")
+            .arg("120")
+            .arg("-y")
+            .arg("40")
+            .arg("-s")
+            .arg(&session_name)
+            .arg("--")
+            .arg("env")
+            .arg(format!("CODEX_HOME={}", codex_home.path().display()))
+            .arg("OPENAI_API_KEY=dummy")
+            .arg(codex)
+            .arg("-c")
+            .arg("analytics.enabled=false")
+            .arg("-c")
+            .arg(&openai_base_url_config)
+            .arg("--no-alt-screen")
+            .arg("-C")
+            .arg(&repo_root)
+            .arg(prompt),
+    )?;
+    let codex_pane = stdout_text(&start_output).trim().to_string();
+    anyhow::ensure!(!codex_pane.is_empty(), "tmux did not report a pane id");
+
+    // Split as soon as the streamed table tail finalizes so the pane resize races the
+    // deferred clear-and-replay cycle that rebuilds terminal scrollback.
+    wait_for_capture_contains(
+        &codex_pane,
+        "atomic replay final sentinel",
+        Duration::from_secs(/*secs*/ 15),
+    )?;
+    let split_output = checked_output(
+        Command::new("tmux")
+            .arg("split-window")
+            .arg("-d")
+            .arg("-P")
+            .arg("-F")
+            .arg("#{pane_id}")
+            .arg("-v")
+            .arg("-l")
+            .arg("12")
+            .arg("-t")
+            .arg(&codex_pane)
+            .arg("sleep")
+            .arg("30"),
+    )?;
+    let split_pane = stdout_text(&split_output).trim().to_string();
+
+    sleep(Duration::from_millis(/*millis*/ 1_000));
+    let split_capture = capture_pane_with_history(&codex_pane)?;
+    anyhow::ensure!(
+        split_capture.contains("atomic replay final sentinel"),
+        "final agent message disappeared from scrollback after split:\n{split_capture}"
+    );
+
+    check(
+        Command::new("tmux")
+            .arg("kill-pane")
+            .arg("-t")
+            .arg(&split_pane),
+    )?;
+
+    sleep(Duration::from_millis(/*millis*/ 1_000));
+    let restored_capture = capture_pane_with_history(&codex_pane)?;
+    anyhow::ensure!(
+        restored_capture.contains("atomic replay final sentinel"),
+        "final agent message disappeared from scrollback after pane restore:\n{restored_capture}"
+    );
+
+    Ok(())
+}
+
 struct TmuxSession {
     name: String,
 }
@@ -518,6 +623,19 @@ fn capture_pane(pane: &str) -> Result<String> {
         Command::new("tmux")
             .arg("capture-pane")
             .arg("-p")
+            .arg("-t")
+            .arg(pane),
+    )?;
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+fn capture_pane_with_history(pane: &str) -> Result<String> {
+    let output = output(
+        Command::new("tmux")
+            .arg("capture-pane")
+            .arg("-p")
+            .arg("-S")
+            .arg("-")
             .arg("-t")
             .arg(pane),
     )?;
