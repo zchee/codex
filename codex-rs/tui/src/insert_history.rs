@@ -255,6 +255,49 @@ where
     Ok(())
 }
 
+/// Replace terminal history with `lines` in one write burst.
+///
+/// Resize reflow rebuilds Codex-owned scrollback from transcript cells: it clears the terminal's
+/// history and rewrites the replacement rows. Writing both on the same writer with no queue in
+/// between matters: a queued rewrite can be dropped by a draw that observes a terminal size
+/// change, which leaves the terminal cleared but never repopulated and permanently loses
+/// finalized messages from scrollback.
+pub fn replace_history_lines<B>(
+    terminal: &mut crate::custom_terminal::Terminal<B>,
+    lines: Vec<Line>,
+) -> io::Result<()>
+where
+    B: Backend + Write,
+{
+    replace_history_hyperlink_lines_with_mode_and_wrap_policy(
+        terminal,
+        plain_hyperlink_lines(lines.iter().map(line_to_static).collect()),
+        InsertHistoryMode::Standard,
+        HistoryLineWrapPolicy::PreWrap,
+    )
+}
+
+pub(crate) fn replace_history_hyperlink_lines_with_mode_and_wrap_policy<B>(
+    terminal: &mut crate::custom_terminal::Terminal<B>,
+    lines: Vec<HyperlinkLine>,
+    mode: InsertHistoryMode,
+    wrap_policy: HistoryLineWrapPolicy,
+) -> io::Result<()>
+where
+    B: Backend + Write,
+{
+    terminal.clear_scrollback_and_visible_screen_ansi()?;
+    let mut area = terminal.viewport_area;
+    if area.y > 0 {
+        area.y = 0;
+        terminal.set_viewport_area(area);
+    }
+    if lines.is_empty() {
+        return Ok(());
+    }
+    insert_history_hyperlink_lines_with_mode_and_wrap_policy(terminal, lines, mode, wrap_policy)
+}
+
 pub(crate) fn leading_whitespace_prefix(line: &Line<'_>) -> Line<'static> {
     let mut spans = Vec::new();
     for span in &line.spans {

@@ -807,6 +807,60 @@ impl Tui {
         self.pending_history_lines.clear();
     }
 
+    /// Clear terminal history and rewrite it with `lines` in one synchronized update.
+    ///
+    /// Resize reflow uses this instead of queueing through `pending_history_lines`: a queued
+    /// rewrite can be dropped by `clear_pending_history_lines` when a later draw observes a
+    /// terminal size change, after the terminal was already cleared. Bypassing the queue makes
+    /// the clear and the rewrite atomic from the terminal's point of view, so an interleaved
+    /// resize can only trigger another full rebuild, never a permanent gap in scrollback.
+    pub(crate) fn replace_history_lines(
+        &mut self,
+        lines: Vec<HyperlinkLine>,
+        wrap_policy: HistoryLineWrapPolicy,
+    ) -> Result<()> {
+        // Anything still queued was rendered from the transcript this rewrite replaces.
+        self.pending_history_lines.clear();
+        let is_zellij = self.is_zellij;
+        let alt_screen_active = self.is_alt_screen_active();
+        stdout().sync_update(|_| {
+            let terminal = &mut self.terminal;
+            let mode = if is_zellij && wrap_policy == HistoryLineWrapPolicy::Terminal {
+                InsertHistoryMode::ZellijRaw
+            } else {
+                InsertHistoryMode::Standard
+            };
+            if alt_screen_active {
+                // An overlay alt-screen UI owns the visible screen; reset only the visible
+                // region, exactly like the pre-rewrite clear did.
+                terminal.clear_visible_screen()?;
+                let mut area = terminal.viewport_area;
+                if area.y > 0 {
+                    area.y = 0;
+                    terminal.set_viewport_area(area);
+                }
+                if lines.is_empty() {
+                    return Ok(());
+                }
+                crate::insert_history::insert_history_hyperlink_lines_with_mode_and_wrap_policy(
+                    terminal,
+                    lines,
+                    mode,
+                    wrap_policy,
+                )
+            } else {
+                crate::insert_history::replace_history_hyperlink_lines_with_mode_and_wrap_policy(
+                    terminal,
+                    lines,
+                    mode,
+                    wrap_policy,
+                )
+            }
+        })??;
+        self.frame_requester().schedule_frame();
+        Ok(())
+    }
+
     /// Resize the inline viewport for the resize-reflow path.
     ///
     /// Unlike the legacy draw path, this path does not scroll rows above the viewport when the

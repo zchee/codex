@@ -162,3 +162,46 @@ fn em_dash_and_space_word_wrap() {
         "word 'inside' should not be split across lines:\n{joined}"
     );
 }
+
+#[test]
+fn replace_history_lines_rewrites_scrollback_without_a_flush_step() {
+    let area = Rect::new(
+        /*x*/ 0, /*y*/ 5, /*width*/ 20, /*height*/ 1,
+    );
+    let mut scenario = TestScenario::new(/*width*/ 20, /*height*/ 6, area);
+
+    scenario.run_insert(vec!["old-one".into(), "old-two".into()]);
+    let rows = scenario.term.backend().vt100().screen().contents();
+    assert_contains!(rows, String::from("old-one"));
+
+    // The rewrite must land on the terminal directly: resize reflow relies on it never
+    // waiting in a queue that a size-change draw is allowed to drop.
+    codex_tui::replace_history_lines(&mut scenario.term, vec!["new-one".into(), "new-two".into()])
+        .expect("failed to replace history lines in test");
+
+    let rows = scenario.term.backend().vt100().screen().contents();
+    assert_contains!(rows, String::from("new-one"));
+    assert_contains!(rows, String::from("new-two"));
+    assert!(
+        !rows.contains("old-one") && !rows.contains("old-two"),
+        "replaced rows should not survive the rewrite:\n{rows}"
+    );
+}
+
+#[test]
+fn replace_history_lines_with_no_lines_clears_screen() {
+    let area = Rect::new(
+        /*x*/ 0, /*y*/ 5, /*width*/ 20, /*height*/ 1,
+    );
+    let mut scenario = TestScenario::new(/*width*/ 20, /*height*/ 6, area);
+
+    scenario.run_insert(vec!["old-one".into()]);
+    codex_tui::replace_history_lines(&mut scenario.term, Vec::new())
+        .expect("failed to replace history lines in test");
+
+    let rows = scenario.term.backend().vt100().screen().contents();
+    assert!(
+        !rows.contains("old-one"),
+        "cleared rows should not survive an empty rewrite:\n{rows}"
+    );
+}
